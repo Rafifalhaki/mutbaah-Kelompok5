@@ -30,6 +30,11 @@ let mentorGroupChartInstance = null;
 let changePinModalInstance = null;
 let menteeDetailModalInstance = null;
 
+// Auto-save queue state
+const pendingAutoSaves = new Map(); // key: `${log_date}__${amalan_id}` -> payload row
+let autoSaveTimer = null;
+let isFlushingAutoSave = false;
+
 const state = {
   user: null, // { id, username, full_name, role }
   activeTab: null,
@@ -37,7 +42,9 @@ const state = {
   amalanMeta: null,
 
   // Mentee-only state (strictly personal logs + public aggregate leaderboard)
+  inputMode: 'daily', // 'daily' | 'weekly'
   selectedDate: '',
+  weeklyStartDate: '', // Monday (YYYY-MM-DD) for 7-day weekly matrix
   draftValues: {}, // { [amalan_id]: number }
   myLogs: [], // ONLY current user's mutabaah_logs
   myStats: null,
@@ -92,6 +99,12 @@ function addDays(dateStr, delta) {
 
 function getDayOfWeek(dateStr) {
   return new Date(parseUtcDate(dateStr)).getUTCDay(); // 0=Minggu .. 5=Jumat .. 6=Sabtu
+}
+
+function getMondayOfWeek(dateStr) {
+  const dow = getDayOfWeek(dateStr);
+  const diffToMonday = dow === 0 ? -6 : 1 - dow;
+  return addDays(dateStr, diffToMonday);
 }
 
 function formatDateLongId(dateStr) {
@@ -241,6 +254,7 @@ function showToast(message, variant = 'success') {
 // --------------------------------------------------------------------------
 function getAmalanIcon(item) {
   const name = (item.name || '').toLowerCase();
+  if (name.includes('sholawat') || name.includes('salawat')) return 'bi-heart-fill';
   if (name.includes('subuh')) return 'bi-sunrise-fill';
   if (name.includes('dzuhur') || name.includes('zuhur')) return 'bi-sun-fill';
   if (name.includes('ashar') || name.includes('asar')) return 'bi-cloud-sun-fill';
@@ -258,15 +272,22 @@ function classifyAmalanItems(items) {
   const dailyItems = sorted.filter((i) => i.category === 'harian');
   const semesterItems = sorted.filter((i) => i.category === 'semester');
 
-  let sholatItems = dailyItems.filter((i) => /sholat|salat|subuh|dzuhur|zuhur|ashar|asar|maghrib|isya/i.test(i.name));
+  let sholatItems = dailyItems.filter(
+    (i) =>
+      /sholat|salat|subuh|dzuhur|zuhur|ashar|asar|maghrib|isya/i.test(i.name) &&
+      !/sholawat|salawat/i.test(i.name)
+  );
   if (sholatItems.length === 0) {
     sholatItems = dailyItems.slice(0, 5);
   }
-
   const sholatIds = new Set(sholatItems.map((i) => i.id));
+
+  const sholawatItems = dailyItems.filter((i) => /sholawat|salawat/i.test(i.name));
+  const sholawatIds = new Set(sholawatItems.map((i) => i.id));
+
   let istighfarItems = dailyItems.filter((i) => /istighfar/i.test(i.name));
   if (istighfarItems.length === 0) {
-    istighfarItems = dailyItems.filter((i) => !sholatIds.has(i.id));
+    istighfarItems = dailyItems.filter((i) => !sholatIds.has(i.id) && !sholawatIds.has(i.id));
   }
   const istighfarIds = new Set(istighfarItems.map((i) => i.id));
 
@@ -290,6 +311,8 @@ function classifyAmalanItems(items) {
     sholatIds,
     istighfarItems,
     istighfarIds,
+    sholawatItems,
+    sholawatIds,
     amalan4xItem,
     tilawahItem,
   };
@@ -321,6 +344,7 @@ function computeUserStats(logs, amalanMeta, todayStr = getTodayStr()) {
 
   let totalSholat = 0;
   let totalIstighfar = 0;
+  let totalSholawat = 0;
   let totalAmalan4x = 0;
   let totalTilawah = 0;
   let hasPositiveData = false;
@@ -355,6 +379,11 @@ function computeUserStats(logs, amalanMeta, todayStr = getTodayStr()) {
         totalIstighfar += 1;
         dailyCompletedByAmalanId[log.amalan_id] = (dailyCompletedByAmalanId[log.amalan_id] || 0) + 1;
       }
+    } else if (amalanMeta.sholawatIds.has(log.amalan_id)) {
+      if (val >= 1) {
+        totalSholawat += 1;
+        dailyCompletedByAmalanId[log.amalan_id] = (dailyCompletedByAmalanId[log.amalan_id] || 0) + 1;
+      }
     } else if (amalanMeta.amalan4xItem && log.amalan_id === amalanMeta.amalan4xItem.id) {
       totalAmalan4x += val;
     } else if (amalanMeta.tilawahItem && log.amalan_id === amalanMeta.tilawahItem.id) {
@@ -364,18 +393,26 @@ function computeUserStats(logs, amalanMeta, todayStr = getTodayStr()) {
 
   const sholatSlotsPerDay = Math.max(1, amalanMeta.sholatIds.size || 5);
   const istighfarSlotsPerDay = Math.max(1, amalanMeta.istighfarIds.size || 1);
+  const hasSholawatComponent = amalanMeta.sholawatIds.size > 0;
+  const sholawatSlotsPerDay = Math.max(1, amalanMeta.sholawatIds.size || 1);
   const amalanTarget = Math.max(1, Number(amalanMeta.amalan4xItem?.target_semester) || 4);
   const tilawahTarget = Math.max(1, Number(amalanMeta.tilawahItem?.target_semester) || 3);
 
   const sholatDenominator = Math.max(1, hariBerjalan * sholatSlotsPerDay);
   const istighfarDenominator = Math.max(1, hariBerjalan * istighfarSlotsPerDay);
+  const sholawatDenominator = Math.max(1, hariBerjalan * sholawatSlotsPerDay);
 
   const pctSholat = clampPct((totalSholat / sholatDenominator) * 100);
   const pctIstighfar = clampPct((totalIstighfar / istighfarDenominator) * 100);
+  const pctSholawat = hasSholawatComponent ? clampPct((totalSholawat / sholawatDenominator) * 100) : 0;
   const pctAmalan = clampPct((totalAmalan4x / amalanTarget) * 100);
   const pctTilawah = clampPct((totalTilawah / tilawahTarget) * 100);
 
-  const finalScore = clampPct((pctSholat + pctIstighfar + pctAmalan + pctTilawah) / 4);
+  const scoreParts = hasSholawatComponent
+    ? [pctSholat, pctIstighfar, pctSholawat, pctAmalan, pctTilawah]
+    : [pctSholat, pctIstighfar, pctAmalan, pctTilawah];
+
+  const finalScore = clampPct(scoreParts.reduce((a, b) => a + b, 0) / scoreParts.length);
   const predicate = getPredicateInfo(finalScore, hasPositiveData);
 
   return {
@@ -385,6 +422,8 @@ function computeUserStats(logs, amalanMeta, todayStr = getTodayStr()) {
     hasAnyLogRecord: uniqueMap.size > 0,
     hasPositiveData,
     hasLoggedToday,
+    hasSholawatComponent,
+    componentCount: scoreParts.length,
 
     totalSholat,
     sholatDenominator,
@@ -393,6 +432,10 @@ function computeUserStats(logs, amalanMeta, todayStr = getTodayStr()) {
     totalIstighfar,
     istighfarDenominator,
     pctIstighfar,
+
+    totalSholawat,
+    sholawatDenominator,
+    pctSholawat,
 
     totalAmalan4x,
     amalanTarget,
@@ -410,6 +453,9 @@ function computeUserStats(logs, amalanMeta, todayStr = getTodayStr()) {
 
 function getFriendlyHabitTip(itemName) {
   const lower = (itemName || '').toLowerCase();
+  if (lower.includes('sholawat') || lower.includes('salawat')) {
+    return 'Tips ringan: baca 20x sholawat setelah setiap sholat fardhu (5 × 20 = 100x), makin utama di hari Jumat!';
+  }
   if (lower.includes('subuh')) return 'Coba tidur lebih awal dan pasang alarm 15 menit sebelum adzan Subuh ya!';
   if (lower.includes('dzuhur') || lower.includes('zuhur')) return 'Jeda sejenak dari aktivitas siang dan segerakan sholat di awal waktu.';
   if (lower.includes('ashar') || lower.includes('asar')) return 'Pasang pengingat sore agar tidak terlewat di tengah kesibukan.';
@@ -448,7 +494,7 @@ function buildRecommendations(stats, amalanMeta) {
         icon: 'bi-patch-check-fill text-emerald',
         iconBg: 'bg-emerald-soft',
         title: 'Amalan Harian Terjaga Penuh!',
-        message: `MasyaAllah, seluruh 6 amalan harianmu konsisten 100% selama ${stats.hariBerjalan} hari berjalan. Semoga Allah terus menjaga keistiqamahanmu!`,
+        message: `MasyaAllah, seluruh ${amalanMeta.dailyItems.length} amalan harianmu konsisten 100% selama ${stats.hariBerjalan} hari berjalan. Semoga Allah terus menjaga keistiqamahanmu!`,
       });
     } else {
       const topMissed = dailyMissed.filter((d) => d.missed === maxMissed).slice(0, 2);
@@ -571,6 +617,19 @@ function renderComponentBarsHtml(stats, amalanMeta) {
       color: 'bg-info',
       icon: 'bi-stars text-info',
     },
+  ];
+
+  if (stats.hasSholawatComponent) {
+    components.push({
+      label: amalanMeta.sholawatItems[0]?.name || 'Sholawat 100x Sehari',
+      pct: stats.pctSholawat,
+      detail: `${stats.totalSholawat} / ${stats.sholawatDenominator} hari`,
+      color: 'bg-danger',
+      icon: 'bi-heart-fill text-danger',
+    });
+  }
+
+  components.push(
     {
       label: amalanTitle,
       pct: stats.pctAmalan,
@@ -584,8 +643,8 @@ function renderComponentBarsHtml(stats, amalanMeta) {
       detail: `${stats.totalTilawah} / ${stats.tilawahTarget} juz`,
       color: 'bg-success',
       icon: 'bi-book-half text-success',
-    },
-  ];
+    }
+  );
 
   return components
     .map(
@@ -815,12 +874,17 @@ async function enterAuthenticatedApp() {
   document.getElementById('mobileMenteeNav').classList.toggle('d-none', isMentor);
   document.getElementById('mobileMentorNav').classList.toggle('d-none', !isMentor);
 
-  // Set initial date for mentee input
+  // Set initial date & week for mentee input
   state.selectedDate = getTodayStr();
   if (state.selectedDate < SEMESTER_START) state.selectedDate = SEMESTER_START;
   if (state.selectedDate > SEMESTER_END) state.selectedDate = SEMESTER_END;
+  state.weeklyStartDate = getMondayOfWeek(state.selectedDate);
+  state.inputMode = 'daily';
+  pendingAutoSaves.clear();
+  setAutoSaveStatus('idle', 'Auto-save aktif');
 
   await refreshAppData();
+  setInputMode('daily');
   switchTab(isMentor ? 'mentor-dashboard' : 'input');
 }
 
@@ -880,6 +944,7 @@ async function refreshAppData() {
     } else {
       await loadMenteeData();
       renderMenteeInputView();
+      renderWeeklyInputView();
       renderMenteeDashboard();
       renderLeaderboard();
     }
@@ -1040,8 +1105,365 @@ async function loadMentorData() {
 }
 
 // --------------------------------------------------------------------------
-// 9. HALAMAN MENTEE — TAB 1: INPUT HARIAN
+// 9. AUTO-SAVE ENGINE & HALAMAN MENTEE — TAB 1: INPUT HARIAN & SEMINGGU
 // --------------------------------------------------------------------------
+function setAutoSaveStatus(status, text) {
+  const el = document.getElementById('autoSaveBadge');
+  if (!el) return;
+  const map = {
+    idle: { cls: 'autosave-idle', icon: '<i class="bi bi-cloud-check-fill"></i>' },
+    saving: { cls: 'autosave-saving', icon: '<span class="spinner-border spinner-border-sm" style="width:0.75rem;height:0.75rem;"></span>' },
+    saved: { cls: 'autosave-saved', icon: '<i class="bi bi-check-circle-fill"></i>' },
+    error: { cls: 'autosave-error', icon: '<i class="bi bi-exclamation-triangle-fill"></i>' },
+  };
+  const cfg = map[status] || map.idle;
+  el.className = `autosave-pill ${cfg.cls}`;
+  el.innerHTML = `${cfg.icon}<span>${escapeHtml(text)}</span>`;
+}
+
+function getLocalLogValue(dateStr, amalanId) {
+  const found = state.myLogs.find((l) => l.log_date === dateStr && l.amalan_id === amalanId);
+  return found ? Math.max(0, Number(found.value) || 0) : 0;
+}
+
+function upsertLocalLog(dateStr, amalanId, value) {
+  const safeVal = Math.max(0, Number(value) || 0);
+  const existing = state.myLogs.find((l) => l.log_date === dateStr && l.amalan_id === amalanId);
+  if (existing) {
+    existing.value = safeVal;
+  } else {
+    state.myLogs.push({
+      user_id: state.user.id,
+      amalan_id: amalanId,
+      log_date: dateStr,
+      value: safeVal,
+    });
+  }
+  if (dateStr === state.selectedDate) {
+    state.draftValues[amalanId] = safeVal;
+  }
+  state.myStats = computeUserStats(state.myLogs, state.amalanMeta);
+}
+
+function queueAutoSave(dateStr, amalanId, value) {
+  if (!state.user || state.user.role !== 'mentee' || !supabaseClient) return;
+  if (dateStr < SEMESTER_START || dateStr > SEMESTER_END) return;
+
+  const safeVal = Math.max(0, Number(value) || 0);
+  upsertLocalLog(dateStr, amalanId, safeVal);
+
+  const key = `${dateStr}__${amalanId}`;
+  pendingAutoSaves.set(key, {
+    user_id: state.user.id,
+    amalan_id: amalanId,
+    log_date: dateStr,
+    value: safeVal,
+  });
+
+  setAutoSaveStatus('saving', 'Menyimpan otomatis...');
+
+  if (autoSaveTimer) clearTimeout(autoSaveTimer);
+  autoSaveTimer = setTimeout(() => {
+    flushAutoSaveQueue();
+  }, 450);
+}
+
+async function flushAutoSaveQueue() {
+  if (isFlushingAutoSave || pendingAutoSaves.size === 0 || !supabaseClient || !state.user) return;
+
+  isFlushingAutoSave = true;
+  const entries = Array.from(pendingAutoSaves.entries());
+  const batch = entries.map(([, row]) => row);
+  entries.forEach(([k]) => pendingAutoSaves.delete(k));
+
+  setAutoSaveStatus('saving', 'Menyimpan otomatis...');
+
+  try {
+    const { error } = await supabaseClient
+      .from('mutabaah_logs')
+      .upsert(batch, { onConflict: 'user_id,amalan_id,log_date' });
+
+    if (error) throw error;
+
+    if (pendingAutoSaves.size > 0) {
+      isFlushingAutoSave = false;
+      await flushAutoSaveQueue();
+      return;
+    }
+
+    const now = new Date();
+    const hh = String(now.getHours()).padStart(2, '0');
+    const mm = String(now.getMinutes()).padStart(2, '0');
+    setAutoSaveStatus('saved', `Tersimpan otomatis • ${hh}:${mm}`);
+
+    // Update indikator 7-day strip & leaderboard di background
+    renderSevenDayStrip();
+    fetchPublicLeaderboard()
+      .then((lb) => {
+        state.leaderboard = lb;
+      })
+      .catch(() => {});
+  } catch (err) {
+    console.error('Auto-save error:', err);
+    entries.forEach(([k, row]) => {
+      if (!pendingAutoSaves.has(k)) pendingAutoSaves.set(k, row);
+    });
+    setAutoSaveStatus('error', 'Gagal auto-save — cek koneksi');
+    showToast(`Auto-save gagal: ${err.message || 'Periksa koneksi internet.'}`, 'danger');
+  } finally {
+    isFlushingAutoSave = false;
+  }
+}
+
+function setInputMode(mode) {
+  state.inputMode = mode === 'weekly' ? 'weekly' : 'daily';
+
+  document.getElementById('dailyInputModePanel')?.classList.toggle('d-none', state.inputMode !== 'daily');
+  document.getElementById('weeklyInputModePanel')?.classList.toggle('d-none', state.inputMode !== 'weekly');
+
+  document.querySelectorAll('[data-input-mode]').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.inputMode === state.inputMode);
+  });
+
+  if (state.inputMode === 'weekly') {
+    if (!state.weeklyStartDate) state.weeklyStartDate = getMondayOfWeek(state.selectedDate || getTodayStr());
+    renderWeeklyInputView();
+  } else {
+    loadDraftForSelectedDate();
+    renderMenteeInputView();
+  }
+}
+
+function renderWeeklyInputView() {
+  const headEl = document.getElementById('weeklyGridHead');
+  const bodyEl = document.getElementById('weeklyGridBody');
+  const rangeEl = document.getElementById('weeklyRangeLabel');
+  if (!headEl || !bodyEl || !state.amalanMeta) return;
+
+  if (!state.weeklyStartDate) {
+    state.weeklyStartDate = getMondayOfWeek(state.selectedDate || getTodayStr());
+  }
+
+  const todayStr = getTodayStr();
+  const weekDates = Array.from({ length: 7 }, (_, i) => addDays(state.weeklyStartDate, i));
+  const firstDay = weekDates[0];
+  const lastDay = weekDates[6];
+
+  if (rangeEl) {
+    rangeEl.textContent = `${formatDateLongId(firstDay)} – ${formatDateLongId(lastDay)}`;
+  }
+
+  // Disable prev/next buttons if entire adjacent week is outside semester
+  const prevWeekEnd = addDays(firstDay, -1);
+  const nextWeekStart = addDays(lastDay, 1);
+  const btnPrev = document.getElementById('btnPrevWeek');
+  const btnNext = document.getElementById('btnNextWeek');
+  if (btnPrev) btnPrev.disabled = prevWeekEnd < SEMESTER_START;
+  if (btnNext) btnNext.disabled = nextWeekStart > SEMESTER_END;
+
+  const dailyItems = state.amalanMeta.dailyItems || [];
+  const semesterItems = state.amalanMeta.semesterItems || [];
+
+  // Header row (Amalan + 7 days with Jumat/Senin-Kamis badge + 1-click "Semua" toggle)
+  const dayHeadersHtml = weekDates
+    .map((dateStr) => {
+      const dow = getDayOfWeek(dateStr);
+      const dayNum = Number(dateStr.split('-')[2]);
+      const monthLabel = MONTH_SHORT_ID[Number(dateStr.split('-')[1]) - 1];
+      const special = getSpecialDayInfo(dateStr);
+      const isToday = dateStr === todayStr;
+      const isOut = dateStr < SEMESTER_START || dateStr > SEMESTER_END;
+
+      const doneInDay = dailyItems.filter((item) => getLocalLogValue(dateStr, item.id) >= 1).length;
+      const allDone = dailyItems.length > 0 && doneInDay === dailyItems.length;
+
+      return `
+        <th class="weekly-day-th ${isToday ? 'is-today' : ''} ${isOut ? 'is-out' : ''}">
+          <div class="small fw-bold text-uppercase ${isToday ? 'text-emerald' : 'text-muted'}" style="font-size:0.7rem;">
+            ${DAY_SHORT_ID[dow]}
+          </div>
+          <div class="fw-bold text-dark" style="font-size:0.9rem;">${dayNum} ${monthLabel}</div>
+          <div style="min-height:19px;">
+            ${
+              special
+                ? `<span class="day-special-badge ${special.badgeClass}">${special.badgeText}</span>`
+                : isToday
+                ? '<span class="day-special-badge bg-emerald-soft text-emerald">Hari Ini</span>'
+                : ''
+            }
+          </div>
+          <button
+            type="button"
+            class="weekly-check-all-btn ${allDone ? 'all-done' : ''}"
+            data-week-all-date="${dateStr}"
+            ${isOut ? 'disabled' : ''}
+            title="${allDone ? 'Batalkan semua amalan harian tanggal ini' : 'Centang semua amalan harian tanggal ini'}"
+          >
+            ${allDone ? '✓ Penuh' : `${doneInDay}/${dailyItems.length}`}
+          </button>
+        </th>
+      `;
+    })
+    .join('');
+
+  headEl.innerHTML = `
+    <tr>
+      <th class="sticky-col">
+        <div class="fw-bold text-dark small">Daftar Amalan</div>
+        <div class="text-muted" style="font-size:0.72rem;">Ketuk kotak untuk centang</div>
+      </th>
+      ${dayHeadersHtml}
+    </tr>
+  `;
+
+  // Body rows: Section 1 — Daily items
+  const dailyRowsHtml = dailyItems
+    .map((item) => {
+      const icon = getAmalanIcon(item);
+      const cellsHtml = weekDates
+        .map((dateStr) => {
+          const isOut = dateStr < SEMESTER_START || dateStr > SEMESTER_END;
+          const checked = getLocalLogValue(dateStr, item.id) >= 1;
+          return `
+            <td>
+              <button
+                type="button"
+                class="weekly-check-btn ${checked ? 'checked' : ''}"
+                data-week-daily-date="${dateStr}"
+                data-week-amalan-id="${item.id}"
+                aria-pressed="${checked}"
+                ${isOut ? 'disabled' : ''}
+                title="${escapeHtml(item.name)} — ${escapeHtml(formatDateShortId(dateStr))}"
+              >
+                <i class="bi bi-check-lg"></i>
+              </button>
+            </td>
+          `;
+        })
+        .join('');
+
+      return `
+        <tr>
+          <td class="sticky-col">
+            <div class="d-flex align-items-center gap-2">
+              <i class="bi ${icon} text-emerald flex-shrink-0"></i>
+              <span class="fw-semibold small text-dark">${escapeHtml(item.name)}</span>
+            </div>
+          </td>
+          ${cellsHtml}
+        </tr>
+      `;
+    })
+    .join('');
+
+  // Body rows: Section 2 — Semester items
+  const semesterRowsHtml = semesterItems
+    .map((item) => {
+      const icon = getAmalanIcon(item);
+      const target = Number(item.target_semester) || 1;
+      const isTilawah = state.amalanMeta?.tilawahItem?.id === item.id;
+      const unitLabel = isTilawah ? 'juz' : 'kali';
+      const totalSemester = state.myLogs
+        .filter((l) => l.amalan_id === item.id && l.log_date >= SEMESTER_START && l.log_date <= SEMESTER_END)
+        .reduce((sum, l) => sum + Math.max(0, Number(l.value) || 0), 0);
+
+      const cellsHtml = weekDates
+        .map((dateStr) => {
+          const isOut = dateStr < SEMESTER_START || dateStr > SEMESTER_END;
+          const val = getLocalLogValue(dateStr, item.id);
+          return `
+            <td>
+              <div class="weekly-stepper">
+                <button
+                  type="button"
+                  class="weekly-step-btn minus"
+                  data-week-step-date="${dateStr}"
+                  data-week-step-id="${item.id}"
+                  data-delta="-1"
+                  ${isOut || val <= 0 ? 'disabled' : ''}
+                  aria-label="Kurangi"
+                >-</button>
+                <span class="weekly-step-val">${val}</span>
+                <button
+                  type="button"
+                  class="weekly-step-btn plus"
+                  data-week-step-date="${dateStr}"
+                  data-week-step-id="${item.id}"
+                  data-delta="1"
+                  ${isOut ? 'disabled' : ''}
+                  aria-label="Tambah"
+                >+</button>
+              </div>
+            </td>
+          `;
+        })
+        .join('');
+
+      return `
+        <tr>
+          <td class="sticky-col">
+            <div class="d-flex align-items-center gap-2">
+              <i class="bi ${icon} text-gold flex-shrink-0"></i>
+              <div>
+                <div class="fw-semibold small text-dark lh-sm">${escapeHtml(item.name)}</div>
+                <div class="text-emerald fw-bold" style="font-size:0.7rem;">Total: ${totalSemester}/${target} ${unitLabel}</div>
+              </div>
+            </div>
+          </td>
+          ${cellsHtml}
+        </tr>
+      `;
+    })
+    .join('');
+
+  bodyEl.innerHTML = `
+    <tr class="weekly-section-row">
+      <td colspan="8">Amalan Harian (${dailyItems.length} Item)</td>
+    </tr>
+    ${dailyRowsHtml}
+    <tr class="weekly-section-row">
+      <td colspan="8">Capaian Target Semester (${semesterItems.length} Item)</td>
+    </tr>
+    ${semesterRowsHtml}
+  `;
+
+  // Event listeners for weekly checkboxes
+  bodyEl.querySelectorAll('[data-week-daily-date]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const dateStr = btn.dataset.weekDailyDate;
+      const amalanId = Number(btn.dataset.weekAmalanId);
+      const nextVal = getLocalLogValue(dateStr, amalanId) >= 1 ? 0 : 1;
+      queueAutoSave(dateStr, amalanId, nextVal);
+      renderWeeklyInputView();
+    });
+  });
+
+  // Event listeners for 1-click "Centang Semua" per day column
+  headEl.querySelectorAll('[data-week-all-date]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const dateStr = btn.dataset.weekAllDate;
+      const allDone = dailyItems.every((item) => getLocalLogValue(dateStr, item.id) >= 1);
+      const targetVal = allDone ? 0 : 1;
+      dailyItems.forEach((item) => {
+        queueAutoSave(dateStr, item.id, targetVal);
+      });
+      renderWeeklyInputView();
+    });
+  });
+
+  // Event listeners for weekly semester steppers
+  bodyEl.querySelectorAll('[data-week-step-date]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const dateStr = btn.dataset.weekStepDate;
+      const amalanId = Number(btn.dataset.weekStepId);
+      const delta = Number(btn.dataset.delta);
+      const current = getLocalLogValue(dateStr, amalanId);
+      const nextVal = Math.max(0, Math.min(20, current + delta));
+      queueAutoSave(dateStr, amalanId, nextVal);
+      renderWeeklyInputView();
+    });
+  });
+}
 function loadDraftForSelectedDate() {
   const draft = {};
   state.amalanItems.forEach((item) => {
@@ -1151,7 +1573,12 @@ function renderSevenDayStrip() {
 function renderDailyToggleCards() {
   const grid = document.getElementById('dailyAmalanGrid');
   const countBadge = document.getElementById('dailyQuickCount');
+  const titleEl = document.getElementById('dailySectionTitle');
   const dailyItems = state.amalanMeta?.dailyItems || [];
+
+  if (titleEl) {
+    titleEl.textContent = `Amalan Harian (${dailyItems.length} Item)`;
+  }
 
   let doneCount = 0;
 
@@ -1194,7 +1621,9 @@ function renderDailyToggleCards() {
 
   const toggleHandler = (card) => {
     const id = Number(card.dataset.dailyId);
-    state.draftValues[id] = Number(state.draftValues[id] || 0) >= 1 ? 0 : 1;
+    const nextVal = Number(state.draftValues[id] || 0) >= 1 ? 0 : 1;
+    state.draftValues[id] = nextVal;
+    queueAutoSave(state.selectedDate, id, nextVal);
     renderDailyToggleCards();
   };
 
@@ -1285,7 +1714,9 @@ function renderSemesterStepperCards() {
       const id = Number(btn.dataset.stepperId);
       const delta = Number(btn.dataset.delta);
       const current = Math.max(0, Number(state.draftValues[id] || 0));
-      state.draftValues[id] = Math.max(0, Math.min(20, current + delta));
+      const nextVal = Math.max(0, Math.min(20, current + delta));
+      state.draftValues[id] = nextVal;
+      queueAutoSave(state.selectedDate, id, nextVal);
       renderSemesterStepperCards();
     });
   });
@@ -1298,6 +1729,12 @@ async function handleSaveMutabaah() {
   setButtonLoading(saveBtn, true);
 
   try {
+    if (autoSaveTimer) {
+      clearTimeout(autoSaveTimer);
+      autoSaveTimer = null;
+    }
+    await flushAutoSaveQueue();
+
     const payload = state.amalanItems.map((item) => ({
       user_id: state.user.id,
       amalan_id: item.id,
@@ -1311,15 +1748,18 @@ async function handleSaveMutabaah() {
 
     if (error) throw error;
 
+    setAutoSaveStatus('saved', 'Tersimpan & tersinkron ✓');
     showToast(`Alhamdulillah! Mutaba'ah tanggal ${formatDateShortId(state.selectedDate)} berhasil disimpan.`, 'success');
 
     // Muat ulang data agar dashboard, 7-day strip, & peringkat langsung terupdate
     await loadMenteeData();
     renderMenteeInputView();
+    renderWeeklyInputView();
     renderMenteeDashboard();
     renderLeaderboard();
   } catch (err) {
     console.error('Save mutabaah error:', err);
+    setAutoSaveStatus('error', 'Gagal menyimpan');
     showToast(`Gagal menyimpan mutaba'ah: ${err.message || 'Coba lagi.'}`, 'danger');
   } finally {
     setButtonLoading(saveBtn, false);
@@ -1359,7 +1799,17 @@ function renderMenteeDashboard() {
     ring.style.strokeDashoffset = `${offset.toFixed(2)}`;
   }
 
-  // 4 Component Progress Bars
+  // Component Progress Bars (4 or 5 components)
+  const compCount = stats.componentCount || 4;
+  const compWeight = Math.round(100 / compCount);
+  const headingEl = document.getElementById('dashComponentsHeading');
+  const weightEl = document.getElementById('dashComponentsWeight');
+  const trendSubEl = document.getElementById('trendSubtitle');
+  if (headingEl) headingEl.textContent = `${compCount} Komponen Penilaian`;
+  if (weightEl) weightEl.textContent = `Bobot setara (${compWeight}%)`;
+  if (trendSubEl) {
+    trendSubEl.textContent = `Persentase penyelesaian ${state.amalanMeta.dailyItems.length} amalan harian per hari`;
+  }
   document.getElementById('dashComponentsList').innerHTML = renderComponentBarsHtml(stats, state.amalanMeta);
 
   // Automatic Recommendations
@@ -1729,7 +2179,7 @@ function renderMentorMonitoringTable() {
   if (filtered.length === 0) {
     tbody.innerHTML = `
       <tr>
-        <td colspan="10" class="text-center text-muted py-5">
+        <td colspan="11" class="text-center text-muted py-5">
           <i class="bi bi-inbox fs-3 d-block mb-2 opacity-50"></i>
           Tidak ada mentee yang cocok dengan filter saat ini.
         </td>
@@ -1755,6 +2205,7 @@ function renderMentorMonitoringTable() {
           <td>${todayBadge}</td>
           <td class="text-end fw-medium">${formatPct(s.pctSholat)}</td>
           <td class="text-end fw-medium">${formatPct(s.pctIstighfar)}</td>
+          <td class="text-end fw-medium">${s.hasSholawatComponent ? formatPct(s.pctSholawat) : '-'}</td>
           <td class="text-end fw-medium">${s.totalAmalan4x}/${s.amalanTarget}</td>
           <td class="text-end fw-medium">${s.totalTilawah}/${s.tilawahTarget} J</td>
           <td class="text-end fw-bold text-dark">${formatPct(s.finalScore)}</td>
@@ -1813,7 +2264,34 @@ function openMenteeDetailModal(menteeId) {
   );
 
   // Daily History Table
+  const historyHead = document.getElementById('modalMenteeHistoryHead');
   const historyBody = document.getElementById('modalMenteeHistoryBody');
+  const dailyOrdered = state.amalanMeta.dailyItems || [];
+  const totalCols = dailyOrdered.length + 3;
+
+  const shortColName = (name) => {
+    const lower = (name || '').toLowerCase();
+    if (lower.includes('subuh')) return 'Subuh';
+    if (lower.includes('dzuhur') || lower.includes('zuhur')) return 'Dzuhur';
+    if (lower.includes('ashar') || lower.includes('asar')) return 'Ashar';
+    if (lower.includes('maghrib')) return 'Maghrib';
+    if (lower.includes('isya')) return 'Isya';
+    if (lower.includes('istighfar')) return 'Istighfar';
+    if (lower.includes('sholawat') || lower.includes('salawat')) return 'Sholawat';
+    return name;
+  };
+
+  if (historyHead) {
+    historyHead.innerHTML = `
+      <tr>
+        <th class="ps-3">Tanggal</th>
+        ${dailyOrdered.map((item) => `<th class="text-center">${escapeHtml(shortColName(item.name))}</th>`).join('')}
+        <th class="text-center">Amalan 4x</th>
+        <th class="text-center pe-3">Tilawah</th>
+      </tr>
+    `;
+  }
+
   const byDate = new Map();
   mentee.logs.forEach((l) => {
     if (!byDate.has(l.log_date)) byDate.set(l.log_date, {});
@@ -1826,13 +2304,12 @@ function openMenteeDetailModal(menteeId) {
   if (sortedDates.length === 0) {
     historyBody.innerHTML = `
       <tr>
-        <td colspan="9" class="text-center text-muted py-4">
+        <td colspan="${totalCols}" class="text-center text-muted py-4">
           Belum ada riwayat pengisian mutaba'ah untuk mentee ini.
         </td>
       </tr>
     `;
   } else {
-    const dailyOrdered = state.amalanMeta.dailyItems;
     const amalan4xId = state.amalanMeta.amalan4xItem?.id;
     const tilawahId = state.amalanMeta.tilawahItem?.id;
 
@@ -1844,11 +2321,9 @@ function openMenteeDetailModal(menteeId) {
     historyBody.innerHTML = sortedDates
       .map((dateStr) => {
         const map = byDate.get(dateStr);
-        const dailyCols = Array.from({ length: 6 }, (_, idx) => {
-          const item = dailyOrdered[idx];
-          if (!item) return '<td class="text-center text-muted">-</td>';
-          return `<td class="text-center">${renderBoolCell(map[item.id] || 0)}</td>`;
-        }).join('');
+        const dailyCols = dailyOrdered
+          .map((item) => `<td class="text-center">${renderBoolCell(map[item.id] || 0)}</td>`)
+          .join('');
         const amalanVal = amalan4xId ? map[amalan4xId] || 0 : 0;
         const tilawahVal = tilawahId ? map[tilawahId] || 0 : 0;
 
@@ -1878,6 +2353,7 @@ function handleExportCsv() {
     'Status Hari Ini',
     'Sholat 5 Waktu (%)',
     'Istighfar 100x (%)',
+    'Sholawat 100x (%)',
     'Amalan 4x (Capaian)',
     'Amalan 4x (%)',
     'Tilawah (Juz)',
@@ -1901,6 +2377,7 @@ function handleExportCsv() {
       s.hasLoggedToday ? 'Sudah Isi' : 'Belum Isi',
       s.pctSholat.toFixed(1),
       s.pctIstighfar.toFixed(1),
+      s.hasSholawatComponent ? s.pctSholawat.toFixed(1) : '-',
       `${s.totalAmalan4x}/${s.amalanTarget}`,
       s.pctAmalan.toFixed(1),
       `${s.totalTilawah}/${s.tilawahTarget}`,
@@ -1988,6 +2465,37 @@ function bindEvents() {
 
   // Mentee Save Button
   document.getElementById('btnSaveMutabaah')?.addEventListener('click', handleSaveMutabaah);
+
+  // Input Mode Switcher (Harian vs Isi Seminggu)
+  document.querySelectorAll('[data-input-mode]').forEach((btn) => {
+    btn.addEventListener('click', () => setInputMode(btn.dataset.inputMode));
+  });
+
+  // Weekly Navigation Controls
+  document.getElementById('btnPrevWeek')?.addEventListener('click', () => {
+    state.weeklyStartDate = addDays(state.weeklyStartDate || getMondayOfWeek(getTodayStr()), -7);
+    renderWeeklyInputView();
+  });
+
+  document.getElementById('btnThisWeek')?.addEventListener('click', () => {
+    let target = getTodayStr();
+    if (target < SEMESTER_START) target = SEMESTER_START;
+    if (target > SEMESTER_END) target = SEMESTER_END;
+    state.weeklyStartDate = getMondayOfWeek(target);
+    renderWeeklyInputView();
+  });
+
+  document.getElementById('btnNextWeek')?.addEventListener('click', () => {
+    state.weeklyStartDate = addDays(state.weeklyStartDate || getMondayOfWeek(getTodayStr()), 7);
+    renderWeeklyInputView();
+  });
+
+  // Flush pending auto-saves if user closes/switches tab
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden' && pendingAutoSaves.size > 0) {
+      flushAutoSaveQueue();
+    }
+  });
 
   // Mentor Filter Buttons
   document.querySelectorAll('#mentorFilterGroup [data-filter]').forEach((btn) => {

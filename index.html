@@ -18,7 +18,7 @@
   <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet" />
 
   <!-- Custom Styles -->
-  <link rel="stylesheet" href="style.css?v=20261124-2" />
+  <link rel="stylesheet" href="style.css?v=20261124-3" />
 </head>
 <body>
   <!-- Toast Container -->
@@ -220,84 +220,152 @@
       <!-- ==================== MENTEE SECTION ==================== -->
       <div id="menteeSection" class="d-none">
 
-        <!-- TAB 1: INPUT HARIAN -->
+        <!-- TAB 1: INPUT HARIAN & SEMINGGU -->
         <section id="tab-input" class="tab-pane-section">
-          <!-- Date Picker & 7-Day Strip Card -->
-          <div class="app-card p-3 p-md-4 mb-4">
-            <div class="d-flex flex-column flex-md-row align-items-md-center justify-content-between gap-3 mb-3">
-              <div>
-                <h2 class="h5 fw-bold text-dark mb-1">
-                  <i class="bi bi-calendar2-check-fill text-emerald me-2"></i>Input Mutaba'ah Harian
-                </h2>
-                <p id="selectedDateLabel" class="small text-muted mb-0">Pilih tanggal untuk mencatat amalan Anda</p>
+          <!-- Mode Switcher & Auto-Save Status Bar -->
+          <div class="d-flex flex-column flex-sm-row align-items-sm-center justify-content-between gap-2.5 mb-3">
+            <div class="input-mode-switch" role="tablist" aria-label="Pilih mode pengisian">
+              <button type="button" id="btnModeDaily" class="mode-switch-btn active" data-input-mode="daily">
+                <i class="bi bi-calendar-day-fill"></i><span>Mode Harian</span>
+              </button>
+              <button type="button" id="btnModeWeekly" class="mode-switch-btn" data-input-mode="weekly">
+                <i class="bi bi-calendar-week-fill"></i><span>Isi Seminggu</span>
+              </button>
+            </div>
+
+            <div id="autoSaveBadge" class="autosave-pill autosave-idle" aria-live="polite">
+              <i class="bi bi-cloud-check-fill"></i>
+              <span>Auto-save aktif</span>
+            </div>
+          </div>
+
+          <!-- ========== MODE 1: INPUT HARIAN ========== -->
+          <div id="dailyInputModePanel">
+            <!-- Date Picker & 7-Day Strip Card -->
+            <div class="app-card p-3 p-md-4 mb-4">
+              <div class="d-flex flex-column flex-md-row align-items-md-center justify-content-between gap-3 mb-3">
+                <div>
+                  <h2 class="h5 fw-bold text-dark mb-1">
+                    <i class="bi bi-calendar2-check-fill text-emerald me-2"></i>Input Mutaba'ah Harian
+                  </h2>
+                  <p id="selectedDateLabel" class="small text-muted mb-0">Pilih tanggal untuk mencatat amalan Anda</p>
+                </div>
+                <div class="d-flex align-items-center gap-2 flex-wrap">
+                  <input
+                    type="date"
+                    id="inputDatePicker"
+                    class="form-control form-control-sm date-picker-input"
+                    aria-label="Pilih tanggal mutaba'ah"
+                  />
+                  <button type="button" id="btnJumpToday" class="btn btn-sm btn-emerald-soft fw-semibold px-3">
+                    Hari Ini
+                  </button>
+                </div>
               </div>
-              <div class="d-flex align-items-center gap-2 flex-wrap">
-                <input
-                  type="date"
-                  id="inputDatePicker"
-                  class="form-control form-control-sm date-picker-input"
-                  aria-label="Pilih tanggal mutaba'ah"
-                />
-                <button type="button" id="btnJumpToday" class="btn btn-sm btn-emerald-soft fw-semibold px-3">
-                  Hari Ini
+
+              <!-- Special Day Banner (Jumat / Senin & Kamis) -->
+              <div id="selectedDateSpecialBanner" class="mb-3 d-none"></div>
+
+              <!-- 7-Day Strip -->
+              <div class="d-flex align-items-center justify-content-between mb-2">
+                <span class="small fw-semibold text-secondary">7 Hari Terakhir</span>
+                <div class="d-flex align-items-center gap-2 small">
+                  <span class="day-legend-pill legend-friday">Jumat</span>
+                  <span class="day-legend-pill legend-sunnah">Senin &amp; Kamis</span>
+                </div>
+              </div>
+              <div id="sevenDayStrip" class="seven-day-strip" role="tablist" aria-label="Pilih salah satu dari 7 hari terakhir">
+                <!-- Rendered dynamically by JS -->
+              </div>
+            </div>
+
+            <!-- Daily Amalan Toggle Cards -->
+            <div class="d-flex align-items-center justify-content-between mb-2.5 px-1">
+              <div>
+                <h3 id="dailySectionTitle" class="h6 fw-bold text-dark mb-0">Amalan Harian (7 Item)</h3>
+                <span class="small text-muted">Ketuk kartu — perubahan langsung tersimpan otomatis</span>
+              </div>
+              <span id="dailyQuickCount" class="badge rounded-pill bg-emerald-soft text-emerald fw-bold px-3 py-2">
+                0 / 7 Selesai
+              </span>
+            </div>
+            <div id="dailyAmalanGrid" class="row g-3 mb-4">
+              <!-- Rendered dynamically by JS -->
+            </div>
+
+            <!-- 2 Semester Amalan Stepper Cards -->
+            <div class="d-flex align-items-center justify-content-between mb-2.5 px-1">
+              <div>
+                <h3 class="h6 fw-bold text-dark mb-0">Capaian Target Semester (2 Item)</h3>
+                <span class="small text-muted">Tambahkan jumlah capaian pada tanggal terpilih (otomatis tersimpan)</span>
+              </div>
+            </div>
+            <div id="semesterAmalanGrid" class="row g-3 mb-4">
+              <!-- Rendered dynamically by JS -->
+            </div>
+
+            <!-- Save Action Card -->
+            <div class="app-card p-3 p-md-4 save-bar-card">
+              <div class="d-flex flex-column flex-sm-row align-items-sm-center justify-content-between gap-3">
+                <div class="small text-muted" id="saveHelperText">
+                  <i class="bi bi-cloud-check-fill text-emerald me-1"></i>
+                  <strong>Auto-save aktif:</strong> setiap klik langsung tersimpan ke database.
+                </div>
+                <button type="button" id="btnSaveMutabaah" class="btn btn-emerald fw-bold px-4 rounded-3">
+                  <span class="btn-label"><i class="bi bi-arrow-repeat me-2"></i>Simpan &amp; Sinkronkan</span>
+                  <span class="btn-spinner d-none">
+                    <span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>Menyimpan...
+                  </span>
                 </button>
               </div>
             </div>
+          </div>
 
-            <!-- Special Day Banner (Jumat / Senin & Kamis) -->
-            <div id="selectedDateSpecialBanner" class="mb-3 d-none"></div>
-
-            <!-- 7-Day Strip -->
-            <div class="d-flex align-items-center justify-content-between mb-2">
-              <span class="small fw-semibold text-secondary">7 Hari Terakhir</span>
-              <div class="d-flex align-items-center gap-2 small">
-                <span class="day-legend-pill legend-friday">Jumat</span>
-                <span class="day-legend-pill legend-sunnah">Senin &amp; Kamis</span>
+          <!-- ========== MODE 2: ISI SEMINGGU SEKALIGUS (7 HARI) ========== -->
+          <div id="weeklyInputModePanel" class="d-none">
+            <div class="app-card overflow-hidden mb-4">
+              <div class="p-3 p-md-4 border-bottom">
+                <div class="d-flex flex-column flex-md-row align-items-md-center justify-content-between gap-3">
+                  <div>
+                    <h2 class="h5 fw-bold text-dark mb-1">
+                      <i class="bi bi-calendar-week-fill text-emerald me-2"></i>Isi Mutaba'ah Seminggu Sekaligus
+                    </h2>
+                    <p id="weeklyRangeLabel" class="small text-muted mb-0">Menampilkan 7 hari (Senin – Minggu)</p>
+                  </div>
+                  <div class="d-flex align-items-center gap-2 flex-wrap">
+                    <button type="button" id="btnPrevWeek" class="btn btn-sm btn-light border fw-semibold rounded-3">
+                      <i class="bi bi-chevron-left"></i> Minggu Lalu
+                    </button>
+                    <button type="button" id="btnThisWeek" class="btn btn-sm btn-emerald-soft fw-semibold rounded-3 px-3">
+                      Minggu Ini
+                    </button>
+                    <button type="button" id="btnNextWeek" class="btn btn-sm btn-light border fw-semibold rounded-3">
+                      Minggu Depan <i class="bi bi-chevron-right"></i>
+                    </button>
+                  </div>
+                </div>
+                <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mt-3">
+                  <span class="small text-muted">
+                    <i class="bi bi-lightning-charge-fill text-gold me-1"></i>
+                    Ketuk kotak tanggal mana saja — otomatis tersimpan tanpa tombol Simpan!
+                  </span>
+                  <div class="d-flex align-items-center gap-2 small">
+                    <span class="day-legend-pill legend-friday">Jumat</span>
+                    <span class="day-legend-pill legend-sunnah">Senin &amp; Kamis</span>
+                  </div>
+                </div>
               </div>
-            </div>
-            <div id="sevenDayStrip" class="seven-day-strip" role="tablist" aria-label="Pilih salah satu dari 7 hari terakhir">
-              <!-- Rendered dynamically by JS -->
-            </div>
-          </div>
 
-          <!-- 6 Daily Amalan Toggle Cards -->
-          <div class="d-flex align-items-center justify-content-between mb-2.5 px-1">
-            <div>
-              <h3 class="h6 fw-bold text-dark mb-0">Amalan Harian (6 Item)</h3>
-              <span class="small text-muted">Ketuk kartu untuk menandai selesai atau batal</span>
-            </div>
-            <span id="dailyQuickCount" class="badge rounded-pill bg-emerald-soft text-emerald fw-bold px-3 py-2">
-              0 / 6 Selesai
-            </span>
-          </div>
-          <div id="dailyAmalanGrid" class="row g-3 mb-4">
-            <!-- Rendered dynamically by JS -->
-          </div>
-
-          <!-- 2 Semester Amalan Stepper Cards -->
-          <div class="d-flex align-items-center justify-content-between mb-2.5 px-1">
-            <div>
-              <h3 class="h6 fw-bold text-dark mb-0">Capaian Target Semester (2 Item)</h3>
-              <span class="small text-muted">Tambahkan jumlah capaian yang dituntaskan pada tanggal terpilih</span>
-            </div>
-          </div>
-          <div id="semesterAmalanGrid" class="row g-3 mb-4">
-            <!-- Rendered dynamically by JS -->
-          </div>
-
-          <!-- Save Action Card -->
-          <div class="app-card p-3 p-md-4 save-bar-card">
-            <div class="d-flex flex-column flex-sm-row align-items-sm-center justify-content-between gap-3">
-              <div class="small text-muted" id="saveHelperText">
-                <i class="bi bi-info-circle text-emerald me-1"></i>
-                Pastikan amalan sudah sesuai sebelum menyimpan.
+              <div class="table-responsive">
+                <table class="table align-middle mb-0 weekly-matrix-table">
+                  <thead id="weeklyGridHead">
+                    <!-- Rendered dynamically by JS -->
+                  </thead>
+                  <tbody id="weeklyGridBody">
+                    <!-- Rendered dynamically by JS -->
+                  </tbody>
+                </table>
               </div>
-              <button type="button" id="btnSaveMutabaah" class="btn btn-emerald btn-lg fw-bold px-4 rounded-3">
-                <span class="btn-label"><i class="bi bi-cloud-check-fill me-2"></i>Simpan Mutaba'ah</span>
-                <span class="btn-spinner d-none">
-                  <span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>Menyimpan...
-                </span>
-              </button>
             </div>
           </div>
         </section>
@@ -339,14 +407,14 @@
           </div>
 
           <div class="row g-4 mb-4">
-            <!-- 4 Component Progress Bars -->
+            <!-- Component Progress Bars -->
             <div class="col-12 col-lg-6">
               <div class="app-card p-3 p-md-4 h-100">
                 <div class="d-flex align-items-center justify-content-between mb-3">
                   <h3 class="h6 fw-bold text-dark mb-0">
-                    <i class="bi bi-bar-chart-steps text-emerald me-2"></i>4 Komponen Penilaian
+                    <i class="bi bi-bar-chart-steps text-emerald me-2"></i><span id="dashComponentsHeading">5 Komponen Penilaian</span>
                   </h3>
-                  <span class="small text-muted">Bobot setara (25%)</span>
+                  <span id="dashComponentsWeight" class="small text-muted">Bobot setara (20%)</span>
                 </div>
                 <div id="dashComponentsList" class="d-flex flex-column gap-3.5">
                   <!-- Rendered dynamically by JS -->
@@ -377,7 +445,7 @@
                 <h3 class="h6 fw-bold text-dark mb-0">
                   <i class="bi bi-graph-up-arrow text-emerald me-2"></i>Tren Amalan Harian (14 Hari Terakhir)
                 </h3>
-                <span class="small text-muted">Persentase penyelesaian 6 amalan harian per hari</span>
+                <span id="trendSubtitle" class="small text-muted">Persentase penyelesaian amalan harian per hari</span>
               </div>
               <span id="menteeTrendEmptyHint" class="badge rounded-pill bg-light text-secondary d-none">
                 Belum ada catatan — grafik mulai dari 0%
@@ -589,6 +657,7 @@
                     <th>Hari Ini</th>
                     <th class="text-end">Sholat 5W</th>
                     <th class="text-end">Istighfar</th>
+                    <th class="text-end">Sholawat</th>
                     <th class="text-end">Amalan 4x</th>
                     <th class="text-end">Tilawah 3J</th>
                     <th class="text-end">Skor Akhir</th>
@@ -714,7 +783,7 @@
             </div>
             <div class="table-responsive">
               <table class="table table-sm table-hover align-middle mb-0 custom-table">
-                <thead>
+                <thead id="modalMenteeHistoryHead">
                   <tr>
                     <th class="ps-3">Tanggal</th>
                     <th class="text-center">Subuh</th>
@@ -723,6 +792,7 @@
                     <th class="text-center">Maghrib</th>
                     <th class="text-center">Isya</th>
                     <th class="text-center">Istighfar</th>
+                    <th class="text-center">Sholawat</th>
                     <th class="text-center">Amalan 4x</th>
                     <th class="text-center pe-3">Tilawah</th>
                   </tr>
@@ -747,6 +817,6 @@
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 
   <!-- Main Application Script -->
-  <script src="app.js?v=20261124-2"></script>
+  <script src="app.js?v=20261124-3"></script>
 </body>
 </html>

@@ -51,7 +51,9 @@ INSERT INTO public.profiles (username, pin, full_name, role) VALUES
   ('rifq',     '1234', 'Rifq',        'mentee')
 ON CONFLICT (username) DO NOTHING;
 
--- 5. Isi Data Awal `amalan_items` (6 Harian + 2 Semester)
+-- 5. Isi Data Awal `amalan_items` (7 Harian + 2 Semester)
+-- Catatan: Sholawat 100x memakai id = 9 (order_num = 7) agar kompatibel dengan
+-- database yang sudah terlanjur menyimpan id 7 & 8 untuk target semester.
 INSERT INTO public.amalan_items (id, name, category, target_semester, order_num) VALUES
   (1, 'Sholat Subuh',                    'harian',   NULL, 1),
   (2, 'Sholat Dzuhur',                   'harian',   NULL, 2),
@@ -59,9 +61,14 @@ INSERT INTO public.amalan_items (id, name, category, target_semester, order_num)
   (4, 'Sholat Maghrib',                  'harian',   NULL, 4),
   (5, 'Sholat Isya',                     'harian',   NULL, 5),
   (6, 'Istighfar 100x sehari',           'harian',   NULL, 6),
-  (7, 'Amalan target 4x / semester',     'semester', 4,    7),
-  (8, 'Tilawah target 3 juz / semester', 'semester', 3,    8)
-ON CONFLICT (id) DO NOTHING;
+  (9, 'Sholawat 100x sehari',            'harian',   NULL, 7),
+  (7, 'Amalan target 4x / semester',     'semester', 4,    8),
+  (8, 'Tilawah target 3 juz / semester', 'semester', 3,    9)
+ON CONFLICT (id) DO UPDATE SET
+  name = EXCLUDED.name,
+  category = EXCLUDED.category,
+  target_semester = EXCLUDED.target_semester,
+  order_num = EXCLUDED.order_num;
 
 -- 6. Nonaktifkan RLS & Beri Hak Akses ke Role `anon` (Publishable Key)
 ALTER TABLE public.profiles DISABLE ROW LEVEL SECURITY;
@@ -98,8 +105,9 @@ BEGIN
     SELECT
       p.id AS uid,
       p.full_name AS fname,
-      COALESCE(SUM(CASE WHEN a.category = 'harian' AND LOWER(a.name) LIKE '%sholat%' AND l.value >= 1 THEN 1 ELSE 0 END), 0) AS sholat_done,
+      COALESCE(SUM(CASE WHEN a.category = 'harian' AND LOWER(a.name) LIKE '%sholat%' AND LOWER(a.name) NOT LIKE '%sholawat%' AND l.value >= 1 THEN 1 ELSE 0 END), 0) AS sholat_done,
       COALESCE(SUM(CASE WHEN a.category = 'harian' AND LOWER(a.name) LIKE '%istighfar%' AND l.value >= 1 THEN 1 ELSE 0 END), 0) AS istighfar_done,
+      COALESCE(SUM(CASE WHEN a.category = 'harian' AND LOWER(a.name) LIKE '%sholawat%' AND l.value >= 1 THEN 1 ELSE 0 END), 0) AS sholawat_done,
       COALESCE(SUM(CASE WHEN a.category = 'semester' AND LOWER(a.name) NOT LIKE '%tilawah%' THEN GREATEST(l.value, 0) ELSE 0 END), 0) AS amalan4x_done,
       COALESCE(SUM(CASE WHEN a.category = 'semester' AND LOWER(a.name) LIKE '%tilawah%' THEN GREATEST(l.value, 0) ELSE 0 END), 0) AS tilawah_done,
       BOOL_OR(COALESCE(l.value, 0) > 0) AS any_positive
@@ -118,9 +126,10 @@ BEGIN
     ROUND((
       LEAST(100, (sholat_done::NUMERIC / (v_days * 5)) * 100) +
       LEAST(100, (istighfar_done::NUMERIC / v_days) * 100) +
+      LEAST(100, (sholawat_done::NUMERIC / v_days) * 100) +
       LEAST(100, (amalan4x_done::NUMERIC / 4) * 100) +
       LEAST(100, (tilawah_done::NUMERIC / 3) * 100)
-    ) / 4.0, 2) AS final_score,
+    ) / 5.0, 2) AS final_score,
     COALESCE(any_positive, FALSE) AS has_data
   FROM agg
   ORDER BY final_score DESC, fname ASC;
