@@ -12,7 +12,7 @@ const SUPABASE_ANON_KEY = 'sb_publishable_HgAl4jI581c1KxHC4pUOBA_zDgggLB1';
 // --------------------------------------------------------------------------
 // 2. KONSTANTA PERIODE SEMESTER & APLIKASI
 // --------------------------------------------------------------------------
-const SEMESTER_START = '2026-11-24';
+const SEMESTER_START = '2026-11-01';
 const SEMESTER_END = '2027-01-31';
 const SESSION_STORAGE_KEY = 'mutabaah_mentoring_session_v1';
 const GROUP_TILAWAH_TARGET_JUZ = 30; // 10 mentee x 3 juz

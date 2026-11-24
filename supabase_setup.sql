@@ -1,44 +1,80 @@
 -- ==========================================================================
--- Catatan SQL Supabase — Mutaba'ah Yaumiyah Kelompok Mentoring
--- Jalankan bagian yang diperlukan di Supabase Dashboard > SQL Editor
+-- SETUP LENGKAP SUPABASE — Mutaba'ah Yaumiyah Kelompok Mentoring (Kelompok 5)
+-- Copy-paste seluruh isi file ini ke: Supabase Dashboard > SQL Editor > Run
 -- ==========================================================================
 
--- --------------------------------------------------------------------------
--- OPSI 1 (PALING PRAKTIS — NONAKTIFKAN RLS SEMENTARA / INTERNAL KELOMPOK)
--- Karena login menggunakan tabel `profiles` (username + PIN) tanpa Supabase Auth,
--- nonaktifkan RLS agar client anon key dapat membaca/menulis data.
--- Privasi antar mentee tetap ditegakkan ketat di sisi aplikasi frontend.
--- --------------------------------------------------------------------------
+-- 1. Buat Tabel `profiles`
+CREATE TABLE IF NOT EXISTS public.profiles (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  username TEXT UNIQUE NOT NULL,
+  pin TEXT NOT NULL,
+  full_name TEXT NOT NULL,
+  role TEXT NOT NULL CHECK (role IN ('mentor', 'mentee'))
+);
+
+-- 2. Buat Tabel `amalan_items`
+CREATE TABLE IF NOT EXISTS public.amalan_items (
+  id INT PRIMARY KEY,
+  name TEXT NOT NULL,
+  category TEXT NOT NULL CHECK (category IN ('harian', 'semester')),
+  target_semester INT,
+  order_num INT NOT NULL
+);
+
+-- 3. Buat Tabel `mutabaah_logs` (dimulai dari 0 catatan / kosong)
+CREATE TABLE IF NOT EXISTS public.mutabaah_logs (
+  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  user_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+  amalan_id INT NOT NULL REFERENCES public.amalan_items(id) ON DELETE CASCADE,
+  log_date DATE NOT NULL,
+  value INT NOT NULL DEFAULT 0,
+  CONSTRAINT mutabaah_logs_unique_user_amalan_date UNIQUE (user_id, amalan_id, log_date)
+);
+
+-- Index bantu untuk query cepat per user dan tanggal
+CREATE INDEX IF NOT EXISTS idx_mutabaah_logs_user_date
+  ON public.mutabaah_logs (user_id, log_date);
+
+-- 4. Isi Data Awal `profiles` (1 Mentor + 10 Mentee, PIN awal: 1234)
+-- User dapat mengganti PIN masing-masing lewat fitur "Ubah PIN" di dalam aplikasi.
+INSERT INTO public.profiles (username, pin, full_name, role) VALUES
+  ('usamah',   '1234', 'Bang Usamah', 'mentor'),
+  ('fatih',    '1234', 'Fatih',       'mentee'),
+  ('fahrezi',  '1234', 'Fahrezi',     'mentee'),
+  ('ghazy',    '1234', 'Ghazy',       'mentee'),
+  ('nawaf',    '1234', 'Nawaf',       'mentee'),
+  ('autumn',   '1234', 'Autumn',      'mentee'),
+  ('fachri',   '1234', 'Fachri',      'mentee'),
+  ('salman',   '1234', 'Salman',      'mentee'),
+  ('reza',     '1234', 'Reza',        'mentee'),
+  ('shapiere', '1234', 'Shapiere',    'mentee'),
+  ('rifq',     '1234', 'Rifq',        'mentee')
+ON CONFLICT (username) DO NOTHING;
+
+-- 5. Isi Data Awal `amalan_items` (6 Harian + 2 Semester)
+INSERT INTO public.amalan_items (id, name, category, target_semester, order_num) VALUES
+  (1, 'Sholat Subuh',                    'harian',   NULL, 1),
+  (2, 'Sholat Dzuhur',                   'harian',   NULL, 2),
+  (3, 'Sholat Ashar',                    'harian',   NULL, 3),
+  (4, 'Sholat Maghrib',                  'harian',   NULL, 4),
+  (5, 'Sholat Isya',                     'harian',   NULL, 5),
+  (6, 'Istighfar 100x sehari',           'harian',   NULL, 6),
+  (7, 'Amalan target 4x / semester',     'semester', 4,    7),
+  (8, 'Tilawah target 3 juz / semester', 'semester', 3,    8)
+ON CONFLICT (id) DO NOTHING;
+
+-- 6. Nonaktifkan RLS & Beri Hak Akses ke Role `anon` (Publishable Key)
 ALTER TABLE public.profiles DISABLE ROW LEVEL SECURITY;
 ALTER TABLE public.amalan_items DISABLE ROW LEVEL SECURITY;
 ALTER TABLE public.mutabaah_logs DISABLE ROW LEVEL SECURITY;
 
--- --------------------------------------------------------------------------
--- OPSI 2 (JIKA RLS INGIN TETAP AKTIF dengan Policy Terbuka untuk Anon Key)
--- Gunakan ini HANYA jika Anda tidak ingin menjalankan DISABLE ROW LEVEL SECURITY.
--- --------------------------------------------------------------------------
-/*
-ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.amalan_items ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.mutabaah_logs ENABLE ROW LEVEL SECURITY;
+GRANT USAGE ON SCHEMA public TO anon, authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.profiles TO anon, authenticated;
+GRANT SELECT ON TABLE public.amalan_items TO anon, authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.mutabaah_logs TO anon, authenticated;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO anon, authenticated;
 
-CREATE POLICY "Allow anon read profiles" ON public.profiles
-  FOR SELECT TO anon USING (true);
-
-CREATE POLICY "Allow anon update own pin" ON public.profiles
-  FOR UPDATE TO anon USING (true) WITH CHECK (true);
-
-CREATE POLICY "Allow anon read amalan_items" ON public.amalan_items
-  FOR SELECT TO anon USING (true);
-
-CREATE POLICY "Allow anon manage mutabaah_logs" ON public.mutabaah_logs
-  FOR ALL TO anon USING (true) WITH CHECK (true);
-*/
-
--- --------------------------------------------------------------------------
--- OPSI 3 (OPSIONAL — RPC LEADERBOARD PUBLIK AGAR MENTEE TAK PERLU QUERY LOG MENTEE LAIN)
--- app.js otomatis mendeteksi fungsi ini jika tersedia!
--- --------------------------------------------------------------------------
+-- 7. Fungsi RPC Leaderboard Publik (Privasi Ketat untuk Mentee)
 CREATE OR REPLACE FUNCTION public.get_public_leaderboard()
 RETURNS TABLE (
   user_id UUID,
@@ -50,7 +86,7 @@ LANGUAGE plpgsql
 SECURITY DEFINER
 AS $$
 DECLARE
-  v_start DATE := DATE '2026-11-24';
+  v_start DATE := DATE '2026-11-01';
   v_end   DATE := DATE '2027-01-31';
   v_today DATE := CURRENT_DATE;
   v_days  INT;
@@ -92,3 +128,6 @@ END;
 $$;
 
 GRANT EXECUTE ON FUNCTION public.get_public_leaderboard() TO anon, authenticated;
+
+-- 8. Refresh Schema Cache Supabase API agar tabel langsung terbaca
+NOTIFY pgrst, 'reload schema';
