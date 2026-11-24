@@ -161,6 +161,15 @@ function getSemesterMetrics(todayStr = getTodayStr()) {
   return { totalDays, hariBerjalan, sisaHari, todayStr };
 }
 
+function getMaxInputDate(todayStr = getTodayStr()) {
+  return todayStr < SEMESTER_END ? todayStr : SEMESTER_END;
+}
+
+function isDateEditable(dateStr, todayStr = getTodayStr()) {
+  if (!dateStr) return false;
+  return dateStr >= SEMESTER_START && dateStr <= getMaxInputDate(todayStr);
+}
+
 function clampPct(value) {
   if (!Number.isFinite(value) || Number.isNaN(value)) return 0;
   return Math.max(0, Math.min(100, value));
@@ -338,8 +347,9 @@ function computeUserStats(logs, amalanMeta, todayStr = getTodayStr()) {
   const { hariBerjalan, sisaHari, totalDays } = getSemesterMetrics(todayStr);
   const safeLogs = Array.isArray(logs) ? logs : [];
 
+  const maxAllowedDate = getMaxInputDate(todayStr);
   const semesterLogs = safeLogs.filter(
-    (l) => l.log_date && l.log_date >= SEMESTER_START && l.log_date <= SEMESTER_END
+    (l) => l.log_date && l.log_date >= SEMESTER_START && l.log_date <= maxAllowedDate
   );
 
   let totalSholat = 0;
@@ -874,10 +884,11 @@ async function enterAuthenticatedApp() {
   document.getElementById('mobileMenteeNav').classList.toggle('d-none', isMentor);
   document.getElementById('mobileMentorNav').classList.toggle('d-none', !isMentor);
 
-  // Set initial date & week for mentee input
+  // Set initial date & week for mentee input (dibatasi maksimal hari ini)
+  const maxDate = getMaxInputDate();
   state.selectedDate = getTodayStr();
   if (state.selectedDate < SEMESTER_START) state.selectedDate = SEMESTER_START;
-  if (state.selectedDate > SEMESTER_END) state.selectedDate = SEMESTER_END;
+  if (state.selectedDate > maxDate) state.selectedDate = maxDate;
   state.weeklyStartDate = getMondayOfWeek(state.selectedDate);
   state.inputMode = 'daily';
   pendingAutoSaves.clear();
@@ -1147,7 +1158,10 @@ function upsertLocalLog(dateStr, amalanId, value) {
 
 function queueAutoSave(dateStr, amalanId, value) {
   if (!state.user || state.user.role !== 'mentee' || !supabaseClient) return;
-  if (dateStr < SEMESTER_START || dateStr > SEMESTER_END) return;
+  if (!isDateEditable(dateStr)) {
+    showToast('Tanggal yang akan datang belum bisa diisi.', 'warning');
+    return;
+  }
 
   const safeVal = Math.max(0, Number(value) || 0);
   upsertLocalLog(dateStr, amalanId, safeVal);
@@ -1253,13 +1267,14 @@ function renderWeeklyInputView() {
     rangeEl.textContent = `${formatDateLongId(firstDay)} – ${formatDateLongId(lastDay)}`;
   }
 
-  // Disable prev/next buttons if entire adjacent week is outside semester
+  // Disable prev/next buttons if adjacent week is outside [SEMESTER_START, today]
+  const maxEditable = getMaxInputDate(todayStr);
   const prevWeekEnd = addDays(firstDay, -1);
   const nextWeekStart = addDays(lastDay, 1);
   const btnPrev = document.getElementById('btnPrevWeek');
   const btnNext = document.getElementById('btnNextWeek');
   if (btnPrev) btnPrev.disabled = prevWeekEnd < SEMESTER_START;
-  if (btnNext) btnNext.disabled = nextWeekStart > SEMESTER_END;
+  if (btnNext) btnNext.disabled = nextWeekStart > maxEditable;
 
   const dailyItems = state.amalanMeta.dailyItems || [];
   const semesterItems = state.amalanMeta.semesterItems || [];
@@ -1272,7 +1287,8 @@ function renderWeeklyInputView() {
       const monthLabel = MONTH_SHORT_ID[Number(dateStr.split('-')[1]) - 1];
       const special = getSpecialDayInfo(dateStr);
       const isToday = dateStr === todayStr;
-      const isOut = dateStr < SEMESTER_START || dateStr > SEMESTER_END;
+      const isFuture = dateStr > maxEditable;
+      const isOut = !isDateEditable(dateStr, todayStr);
 
       const doneInDay = dailyItems.filter((item) => getLocalLogValue(dateStr, item.id) >= 1).length;
       const allDone = dailyItems.length > 0 && doneInDay === dailyItems.length;
@@ -1297,9 +1313,15 @@ function renderWeeklyInputView() {
             class="weekly-check-all-btn ${allDone ? 'all-done' : ''}"
             data-week-all-date="${dateStr}"
             ${isOut ? 'disabled' : ''}
-            title="${allDone ? 'Batalkan semua amalan harian tanggal ini' : 'Centang semua amalan harian tanggal ini'}"
+            title="${
+              isFuture
+                ? 'Belum waktunya — tanggal besok/masa depan terkunci'
+                : allDone
+                ? 'Batalkan semua amalan harian tanggal ini'
+                : 'Centang semua amalan harian tanggal ini'
+            }"
           >
-            ${allDone ? '✓ Penuh' : `${doneInDay}/${dailyItems.length}`}
+            ${isFuture ? '<i class="bi bi-lock-fill"></i>' : allDone ? '✓ Penuh' : `${doneInDay}/${dailyItems.length}`}
           </button>
         </th>
       `;
@@ -1322,8 +1344,9 @@ function renderWeeklyInputView() {
       const icon = getAmalanIcon(item);
       const cellsHtml = weekDates
         .map((dateStr) => {
-          const isOut = dateStr < SEMESTER_START || dateStr > SEMESTER_END;
-          const checked = getLocalLogValue(dateStr, item.id) >= 1;
+          const isFuture = dateStr > maxEditable;
+          const isOut = !isDateEditable(dateStr, todayStr);
+          const checked = !isFuture && getLocalLogValue(dateStr, item.id) >= 1;
           return `
             <td>
               <button
@@ -1333,9 +1356,13 @@ function renderWeeklyInputView() {
                 data-week-amalan-id="${item.id}"
                 aria-pressed="${checked}"
                 ${isOut ? 'disabled' : ''}
-                title="${escapeHtml(item.name)} — ${escapeHtml(formatDateShortId(dateStr))}"
+                title="${
+                  isFuture
+                    ? 'Tanggal masa depan terkunci'
+                    : `${escapeHtml(item.name)} — ${escapeHtml(formatDateShortId(dateStr))}`
+                }"
               >
-                <i class="bi bi-check-lg"></i>
+                <i class="bi ${isFuture ? 'bi-lock-fill text-muted' : 'bi-check-lg'}"></i>
               </button>
             </td>
           `;
@@ -1364,13 +1391,14 @@ function renderWeeklyInputView() {
       const isTilawah = state.amalanMeta?.tilawahItem?.id === item.id;
       const unitLabel = isTilawah ? 'juz' : 'kali';
       const totalSemester = state.myLogs
-        .filter((l) => l.amalan_id === item.id && l.log_date >= SEMESTER_START && l.log_date <= SEMESTER_END)
+        .filter((l) => l.amalan_id === item.id && l.log_date >= SEMESTER_START && l.log_date <= maxEditable)
         .reduce((sum, l) => sum + Math.max(0, Number(l.value) || 0), 0);
 
       const cellsHtml = weekDates
         .map((dateStr) => {
-          const isOut = dateStr < SEMESTER_START || dateStr > SEMESTER_END;
-          const val = getLocalLogValue(dateStr, item.id);
+          const isFuture = dateStr > maxEditable;
+          const isOut = !isDateEditable(dateStr, todayStr);
+          const val = isFuture ? 0 : getLocalLogValue(dateStr, item.id);
           return `
             <td>
               <div class="weekly-stepper">
@@ -1480,8 +1508,15 @@ function loadDraftForSelectedDate() {
 }
 
 function getCumulativeSemesterExcludingSelected(amalanId) {
+  const maxEditable = getMaxInputDate();
   return state.myLogs
-    .filter((l) => l.amalan_id === amalanId && l.log_date !== state.selectedDate)
+    .filter(
+      (l) =>
+        l.amalan_id === amalanId &&
+        l.log_date >= SEMESTER_START &&
+        l.log_date <= maxEditable &&
+        l.log_date !== state.selectedDate
+    )
     .reduce((sum, l) => sum + Math.max(0, Number(l.value) || 0), 0);
 }
 
@@ -1489,9 +1524,15 @@ function renderMenteeInputView() {
   const datePicker = document.getElementById('inputDatePicker');
   const dateLabel = document.getElementById('selectedDateLabel');
   const specialBanner = document.getElementById('selectedDateSpecialBanner');
+  const maxEditable = getMaxInputDate();
+
+  if (state.selectedDate > maxEditable) {
+    state.selectedDate = maxEditable;
+    loadDraftForSelectedDate();
+  }
 
   datePicker.min = SEMESTER_START;
-  datePicker.max = SEMESTER_END;
+  datePicker.max = maxEditable;
   datePicker.value = state.selectedDate;
 
   const isToday = state.selectedDate === getTodayStr();
@@ -1534,7 +1575,7 @@ function renderSevenDayStrip() {
       const special = getSpecialDayInfo(dateStr);
       const isSelected = dateStr === state.selectedDate;
       const hasData = datesWithLogs.has(dateStr);
-      const isOutOfRange = dateStr < SEMESTER_START || dateStr > SEMESTER_END;
+      const isOutOfRange = !isDateEditable(dateStr, todayStr);
 
       return `
         <button
@@ -1542,7 +1583,7 @@ function renderSevenDayStrip() {
           class="day-pill ${isSelected ? 'selected' : ''} ${isOutOfRange ? 'out-of-range' : ''}"
           data-strip-date="${dateStr}"
           aria-pressed="${isSelected}"
-          title="${isOutOfRange ? 'Di luar periode semester' : escapeHtml(formatDateLongId(dateStr))}"
+          title="${isOutOfRange ? 'Tanggal belum bisa diisi / di luar periode' : escapeHtml(formatDateLongId(dateStr))}"
         >
           <span class="day-pill-name">${DAY_SHORT_ID[dow]}</span>
           <span class="day-pill-num">${dayNum}</span>
@@ -1559,8 +1600,8 @@ function renderSevenDayStrip() {
   container.querySelectorAll('[data-strip-date]').forEach((btn) => {
     btn.addEventListener('click', () => {
       const picked = btn.dataset.stripDate;
-      if (picked < SEMESTER_START || picked > SEMESTER_END) {
-        showToast(`Tanggal di luar periode semester (${SEMESTER_START} s.d. ${SEMESTER_END}).`, 'warning');
+      if (!isDateEditable(picked)) {
+        showToast('Hanya bisa mengisi mulai 1 Nov 2026 hingga hari ini (tidak bisa tanggal besok).', 'warning');
         return;
       }
       state.selectedDate = picked;
@@ -1724,6 +1765,10 @@ function renderSemesterStepperCards() {
 
 async function handleSaveMutabaah() {
   if (!state.user || state.user.role !== 'mentee' || !supabaseClient) return;
+  if (!isDateEditable(state.selectedDate)) {
+    showToast('Tidak dapat menyimpan tanggal yang akan datang.', 'warning');
+    return;
+  }
 
   const saveBtn = document.getElementById('btnSaveMutabaah');
   setButtonLoading(saveBtn, true);
@@ -2440,12 +2485,16 @@ function bindEvents() {
   // Logout
   document.getElementById('btnLogout')?.addEventListener('click', handleLogout);
 
-  // Mentee Date Picker & Jump Today
+  // Mentee Date Picker & Jump Today (maksimal hari ini — anti isi besok)
   document.getElementById('inputDatePicker')?.addEventListener('change', (e) => {
     const val = e.target.value;
     if (!val) return;
-    if (val < SEMESTER_START || val > SEMESTER_END) {
-      showToast(`Pilih tanggal antara ${SEMESTER_START} hingga ${SEMESTER_END}.`, 'warning');
+    if (!isDateEditable(val)) {
+      const msg =
+        val > getMaxInputDate()
+          ? 'Tanggal besok/masa depan terkunci agar pengisian tetap jujur.'
+          : `Pilih tanggal mulai ${SEMESTER_START} hingga hari ini.`;
+      showToast(msg, 'warning');
       e.target.value = state.selectedDate;
       return;
     }
@@ -2456,8 +2505,9 @@ function bindEvents() {
 
   document.getElementById('btnJumpToday')?.addEventListener('click', () => {
     let target = getTodayStr();
+    const maxDate = getMaxInputDate();
     if (target < SEMESTER_START) target = SEMESTER_START;
-    if (target > SEMESTER_END) target = SEMESTER_END;
+    if (target > maxDate) target = maxDate;
     state.selectedDate = target;
     loadDraftForSelectedDate();
     renderMenteeInputView();

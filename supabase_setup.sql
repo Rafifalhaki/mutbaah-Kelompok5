@@ -95,7 +95,7 @@ AS $$
 DECLARE
   v_start DATE := DATE '2026-11-01';
   v_end   DATE := DATE '2027-01-31';
-  v_today DATE := CURRENT_DATE;
+  v_today DATE := (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Jakarta')::DATE;
   v_days  INT;
 BEGIN
   v_days := GREATEST(1, LEAST((v_end - v_start) + 1, (v_today - v_start) + 1));
@@ -114,7 +114,7 @@ BEGIN
     FROM public.profiles p
     LEFT JOIN public.mutabaah_logs l
       ON l.user_id = p.id
-      AND l.log_date BETWEEN v_start AND v_end
+      AND l.log_date BETWEEN v_start AND LEAST(v_end, v_today)
     LEFT JOIN public.amalan_items a
       ON a.id = l.amalan_id
     WHERE p.role = 'mentee'
@@ -140,3 +140,24 @@ GRANT EXECUTE ON FUNCTION public.get_public_leaderboard() TO anon, authenticated
 
 -- 8. Refresh Schema Cache Supabase API agar tabel langsung terbaca
 NOTIFY pgrst, 'reload schema';
+
+-- 9. Proteksi Anti-Curang di Level Database (Blokir pengisian tanggal besok/masa depan WIB)
+CREATE OR REPLACE FUNCTION public.prevent_future_mutabaah_log()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  v_today_wib DATE := (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Jakarta')::DATE;
+BEGIN
+  IF NEW.log_date > v_today_wib THEN
+    RAISE EXCEPTION 'Tidak dapat mengisi mutabaah untuk tanggal yang akan datang (%)', NEW.log_date;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_prevent_future_mutabaah_log ON public.mutabaah_logs;
+CREATE TRIGGER trg_prevent_future_mutabaah_log
+  BEFORE INSERT OR UPDATE ON public.mutabaah_logs
+  FOR EACH ROW
+  EXECUTE FUNCTION public.prevent_future_mutabaah_log();
